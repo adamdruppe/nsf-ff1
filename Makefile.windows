@@ -1,0 +1,15 @@
+NOSEFART= \
+/home/me/nes/nosefart-2.9-mls/nsfobj/build/cpu/nes6502/dis6502.obj \
+/home/me/nes/nosefart-2.9-mls/nsfobj/build/cpu/nes6502/nes6502.obj \
+/home/me/nes/nosefart-2.9-mls/nsfobj/build/log.obj \
+/home/me/nes/nosefart-2.9-mls/nsfobj/build/memguard.obj \
+/home/me/nes/nosefart-2.9-mls/nsfobj/build/machine/nsf.obj \
+/home/me/nes/nosefart-2.9-mls/nsfobj/build/sndhrdw/vrc7_snd.obj \
+/home/me/nes/nosefart-2.9-mls/nsfobj/build/sndhrdw/fds_snd.obj \
+/home/me/nes/nosefart-2.9-mls/nsfobj/build/sndhrdw/fmopl.obj \
+/home/me/nes/nosefart-2.9-mls/nsfobj/build/sndhrdw/mmc5_snd.obj \
+/home/me/nes/nosefart-2.9-mls/nsfobj/build/sndhrdw/vrcvisnd.obj \
+/home/me/nes/nosefart-2.9-mls/nsfobj/build/sndhrdw/nes_apu.obj
+
+all:
+	dmdwi -m64 -J. -g nsf.d $(NOSEFART)
