@@ -1,0 +1,16 @@
+NOSEFART= \
+nosefart/nsfinfo.$(OEXT) \
+nosefart/cpu/nes6502/dis6502.$(OEXT) \
+nosefart/cpu/nes6502/nes6502.$(OEXT) \
+nosefart/log.$(OEXT) \
+nosefart/machine/nsf.$(OEXT) \
+nosefart/sndhrdw/vrc7_snd.$(OEXT) \
+nosefart/sndhrdw/fds_snd.$(OEXT) \
+nosefart/sndhrdw/fmopl.$(OEXT) \
+nosefart/sndhrdw/mmc5_snd.$(OEXT) \
+nosefart/sndhrdw/vrcvisnd.$(OEXT) \
+nosefart/sndhrdw/nes_apu.$(OEXT) \
+nosefart/memguard.$(OEXT)
+
+all:
+	$(DC) -g -J. nsf.d $(NOSEFART)

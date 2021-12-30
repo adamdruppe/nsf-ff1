@@ -4,6 +4,8 @@
 	and i want the ff1 editor
 +/
 
+// duration 5 is i think as close to quarter note as we get....
+
 import arsd.simpleaudio;
 import arsd.minigui;
 
@@ -73,8 +75,35 @@ class NsfWidget : Widget {
 
 	override void recomputeChildLayout() {
 		int[3] frame = 0;
-		int stack;
+		ubyte[128] stack;
 		ubyte lastNote;
+		int maxY;
+
+		int max = this.height;
+		enum MAX_NOTE_Y = NOTE_HEIGHT * 12 /* 12 semitones */ * 4 /* 4 octaves */ - NOTE_HEIGHT + NOTE_HEIGHT * 3 /* space for the stack */;
+		if(max < MAX_NOTE_Y)
+			max = MAX_NOTE_Y;
+
+		int maxStack(Widget child) {
+			if(child.x < 0)
+				return 0;
+			auto rangeMin = child.x / 24;
+			if(rangeMin > stack.length)
+				rangeMin = stack.length;
+			auto rangeMax = (child.x + child.width + 23) / 24;
+			if(rangeMax > stack.length)
+				rangeMax = stack.length;
+
+			auto maxStack = 0;
+			foreach(ref item; stack[rangeMin .. rangeMax]) {
+				if(item > maxStack)
+					maxStack = item;
+				item += 1;
+			}
+
+			return maxStack * NOTE_HEIGHT;
+		}
+
 		foreach(child; children) {
 			auto i = cast(NsfPieceWidget) child;
 
@@ -87,30 +116,31 @@ class NsfWidget : Widget {
 					lastNote = cast(ubyte) (i.command.arg + i.octave * 12);
 					goto case;
 				case Rest:
-					child.y = this.height - NOTE_HEIGHT * lastNote;
+					child.y = max - NOTE_HEIGHT * lastNote - NOTE_HEIGHT;
 					child.width = i.duration * FRAME_ZOOM;
-					//stack = 0;
 				break;
 				case Loop:
 					if(i.loopTo is null)
 						goto case End;
-					child.y = stack;
-					stack += NOTE_HEIGHT;
 					auto want = child.x;
 					child.x = i.loopTo.x;
 					child.width = want - child.x;
+					child.y = maxStack(child);
 				break;
 				case Octave:
 				case EnvelopePattern:
 				case EnvelopeSpeed:
 				case Tempo:
 				case End:
-					child.y = stack;
-					stack += NOTE_HEIGHT;
-					child.width = 32;
+					child.width = 24;
+					child.y = maxStack(child);
 			}
 
 			frame[i.channel] += i.duration;
+
+			auto m = child.y + child.height;
+			if(m > maxY)
+				maxY = m;
 
 			child.x -= smw.position.x;
 			child.y -= smw.position.y;
@@ -118,7 +148,7 @@ class NsfWidget : Widget {
 			child.recomputeChildLayout();
 		}
 
-		smw.setTotalArea(frame[0], 600);
+		smw.setTotalArea(frame[0], maxY);
 		smw.setViewableArea(this.width, this.height);
 	}
 
@@ -201,6 +231,12 @@ class NsfPieceWidget : Widget {
 		import std.conv;
 		this.statusTip = to!string(command);
 		super(parent);
+
+		this.addEventListener((DoubleClickEvent ev) {
+			dialog((FF1MusicCommand cmd) {
+				this.command = cmd;
+			});
+		});
 	}
 
 	int octave;
@@ -215,17 +251,109 @@ class NsfPieceWidget : Widget {
 	override Rectangle paintContent(WidgetPainter painter, const Rectangle bounds) {
 		auto channelColor = channel == 0 ? Color.red : channel == 1 ? Color.green : Color.blue;
 
-		if(command.type == FF1MusicCommand.Type.Play) {
-			painter.fillColor = channelColor;
-		} else if(command.type == FF1MusicCommand.Type.Rest) {
-			painter.outlineColor = channelColor;
-		} else {
-			painter.outlineColor = channelColor;
+		with(FF1MusicCommand.Type)
+		final switch(command.type) {
+			case Play:
+				painter.fillColor = channelColor;
+				painter.outlineColor = Color.black;
+			break;
+			case Rest:
+				painter.outlineColor = channelColor;
+				painter.fillColor = Color.transparent;
+			break;
+			case Octave:
+			case EnvelopePattern:
+			case EnvelopeSpeed:
+			case Tempo:
+			case End:
+			case Loop:
+				painter.outlineColor = channelColor;
+				painter.fillColor = Color.transparent;
+			break;
 		}
 		painter.drawRectangle(bounds);
+
+		string text;
+		TextAlignment alignment = TextAlignment.Left;
+
+		import std.format;
+		with(FF1MusicCommand.Type)
+		final switch(command.type) {
+			case Play:
+			case Rest:
+			break;
+			case Loop:
+				text = format("%d", command.arg);
+				alignment = TextAlignment.Right;
+			break;
+			case Octave:
+				text = format("O-%X", command.arg);
+			break;
+			case EnvelopePattern:
+				text = format("P-%X", command.arg);
+			break;
+			case EnvelopeSpeed:
+				text = format("E-%X", command.arg);
+			break;
+			case Tempo:
+				text = format("T-%X", command.arg);
+			break;
+			case End:
+				text = "END";
+			break;
+		}
+
+		if(text.length) {
+			painter.outlineColor = Color.black;
+			painter.drawText(bounds.upperLeft + Point(3, 0), text, bounds.lowerRight - Point(3, 0), alignment);
+		}
+
 		return bounds;
 	}
+	//override void erase(WidgetPainter painter) {}
+
+	class Style : Widget.Style {
+		override WidgetBackground background() {
+			return WidgetBackground(Color.transparent);
+		}
+	}
+	mixin OverrideStyle!Style;
 }
+
+// offset into the music data...
+enum DURATION_TABLE_OFFSET = 0x1d1c;
+
+struct FF1Data {
+	ubyte[] rawData;
+
+	ushort[] songTable() {
+		return cast(ushort[]) rawData[0 .. 4 * 2 * 24];
+	}
+	ubyte[] durationTable() {
+		return rawData[DURATION_TABLE_OFFSET .. DURATION_TABLE_OFFSET + 16 * 6];
+	}
+
+	ubyte[] songData(int songIndex, int channel) {
+		assert(songIndex >= 0 && songIndex < songs.length);
+		assert(channel >= 0 && channel < 3);
+
+		auto ptr = songTable[songIndex * 4 + channel];
+
+		auto magic = rawData[ptr - 0x8000 .. $];
+		auto s = magic;
+
+		int index;
+		while(magic.length) {
+			auto cmd = parseCommand(magic);
+			index += cmd.instructionLength();
+			if(cmd.isEndOfSong)
+				break;
+		}
+
+		return s[0 .. index];
+	}
+}
+FF1Data editableData;
 
 void main() {
 	static import std.file;
@@ -235,9 +363,6 @@ void main() {
 	// i might not actually need all of this but meh.
 	enum ROM_DATA_LENGTH = 0xC000 - 0x8000;
 	enum NSF_HEADER_LENGTH = 128;
-
-	// offset into the music data...
-	enum DURATION_TABLE_OFFSET = 0x1d1c;
 
 	auto nsfFileData = new ubyte[](ROM_DATA_LENGTH + NSF_HEADER_LENGTH + stubProgram.length);
 	nsfFileData[0] = 'N';
@@ -265,12 +390,11 @@ void main() {
 
 	nsfCoreData[0 .. ROM_DATA_LENGTH] = songTablesAndDriverCode[];
 
+	editableData = FF1Data(nsfCoreData[0 .. ROM_DATA_LENGTH]);
+
 	nsfCoreData[ROM_DATA_LENGTH .. ROM_DATA_LENGTH + stubProgram.length] = stubProgram[];
 
 	// /////////////// LOADING COMPLETE ///////////////////
-
-	auto songTable = cast(ushort[]) nsfCoreData[0 .. 4 * 2 * 24];
-	auto durationTable = nsfCoreData[DURATION_TABLE_OFFSET .. DURATION_TABLE_OFFSET + 16 * 6];
 
 	//import std.stdio; writefln("%(%02x %)", noteTable);
 
@@ -320,37 +444,14 @@ void main() {
 	auto smw = new ScrollMessageWidget(window);
 	auto display = new NsfWidget(smw);
 
-	struct Menu {
-		@menu("&File") {
-			void Open() {
-			}
-			void Save() {
-
-			}
-			void Save_As() {
-
-			}
-			@separator
-			void Exit() {
-				window.close();
-			}
-		}
-
-		@menu("&Help") {
-			void About() {
-
-			}
-		}
-	}
-
-	Menu menu;
-
-	window.setMenuAndToolbarFromAnnotatedCode(menu);
-
-	//chooser.addEventListener((ChangeEvent!int ce) {
-	chooser.addEventListener((scope DropDownSelection.SelectionChangedEvent ce) {
+	void playSong(int index, bool reloadData = false) {
 		synchronized {
-			nsf_playtrack(nsf, ce.intValue + 1 /* track number */, 44100, 16, true);
+			if(reloadData) {
+				nsf_free(&nsf);
+				nsf = nsf_load(null, nsfFileData.ptr, cast(int) nsfFileData.length);
+			}
+
+			nsf_playtrack(nsf, index + 1 /* track number */, 44100, 16, true);
 			// it re-enables all channels when you change tracks, so this will resync
 			foreach(channel, control; channelControls)
 				nsf_setchan(nsf, cast(int) channel, control.checked);
@@ -359,20 +460,20 @@ void main() {
 			display.resetPlayerState();
 		}
 
-		if(ce.intValue < 1)
+		if(index < 1)
 			return;
 
-		auto songIndex = ce.intValue - 1;
+		auto songIndex = index - 1;
 
 		display.removeAllChildren();
 
 		foreach(channel; 0 .. 3) {
-			auto ptr = songTable[songIndex * 4 + channel];
+			auto ptr = editableData.songTable[songIndex * 4 + channel];
 
 			auto octave = 0;
 			auto tempo = 0;
 
-			auto magic = nsfCoreData[ptr - 0x8000 .. $];
+			auto magic = editableData.rawData[ptr - 0x8000 .. $];
 			ushort currentAddress = ptr;
 
 			auto channelStart = display.children.length;
@@ -383,7 +484,7 @@ void main() {
 				int dur;
 
 				if(cmd.type == FF1MusicCommand.Type.Play || cmd.type == FF1MusicCommand.Type.Rest)
-					dur = durationTable[16 * tempo + cmd.duration];
+					dur = editableData.durationTable[16 * tempo + cmd.duration];
 
 				if(cmd.type == FF1MusicCommand.Type.Octave)
 					octave = cmd.arg;
@@ -408,11 +509,131 @@ void main() {
 			}
 		}
 
-		return;
-
-	});
+	}
 
 	auto ao = AudioOutputThread(true);
+
+	struct Menu {
+		@menu("&File") {
+			void Open() {
+			}
+			void Save() {
+
+			}
+			void Save_As() {
+				auto newRom = rom.dup;
+				newRom[ROM_OFFSET .. ROM_OFFSET + ROM_DATA_LENGTH] = editableData.rawData[];
+				std.file.write("ff1-newmusic.nes", newRom);
+
+			}
+			@separator
+			void Exit() {
+				window.close();
+			}
+		}
+
+		int speed = 1;
+		int pattern = 1;
+		int tempo = 0;
+
+		@menu("&Edit") {
+			@accelerator("F1")
+			void Speed_Down() {
+				auto sid = chooser.getSelection()-1;
+				auto sd = editableData.songData(sid, 0);
+				sd[2] = cast(ubyte) --speed; // speed
+				Update();
+			}
+
+			@accelerator("F2")
+			void Speed_Up() {
+				auto sid = chooser.getSelection()-1;
+				auto sd = editableData.songData(sid, 0);
+				sd[2] = cast(ubyte) ++speed; // speed
+				Update();
+			}
+
+			@accelerator("F3")
+			void Prev_Pattern() {
+				pattern--;
+				auto sid = chooser.getSelection()-1;
+				auto sd = editableData.songData(sid, 0);
+				sd[3] &= 0xf0;
+				sd[3] |= pattern & 0xf;
+
+				Update();
+			}
+
+			@accelerator("F4")
+			void Next_Pattern() {
+				pattern++;
+				auto sid = chooser.getSelection()-1;
+				auto sd = editableData.songData(sid, 0);
+				sd[3] &= 0xf0;
+				sd[3] |= pattern & 0xf;
+
+				Update();
+			}
+
+			@accelerator("F7")
+			void Tempo_Down() {
+				if(tempo == 0)
+					return;
+				auto sid = chooser.getSelection()-1;
+				auto sd = editableData.songData(sid, 0);
+				tempo--;
+				sd[0] &= 0xf0;
+				sd[0] |= (tempo & 0xf) + 9;
+
+				Update();
+			}
+
+			@accelerator("F8")
+			void Tempo_Up() {
+				if(tempo == 5)
+					return;
+				auto sid = chooser.getSelection()-1;
+				auto sd = editableData.songData(sid, 0);
+				tempo++;
+				sd[0] &= 0xf0;
+				sd[0] |= (tempo & 0xf) + 9;
+
+				Update();
+			}
+
+
+			@accelerator("F5")
+			void Update() {
+				auto sid = chooser.getSelection();
+				playSong(sid, true);
+			}
+
+			void Stop() {
+				playingNsf = false;
+				ao.pause();
+			}
+
+			void Start() {
+				playSong(chooser.getSelection());
+				ao.unpause();
+			}
+		}
+
+		@menu("&Help") {
+			void About() {
+
+			}
+		}
+	}
+
+	Menu menu;
+
+	window.setMenuAndToolbarFromAnnotatedCode(menu);
+
+	//chooser.addEventListener((ChangeEvent!int ce) {
+	chooser.addEventListener((scope DropDownSelection.SelectionChangedEvent ce) {
+		playSong(ce.intValue);
+	});
 	ao.addChannel((short[] b) {
 		if(!playingNsf)
 			return true;
