@@ -1,2 +1,3 @@
 all:
-	make -f Makefile.guts DC="dmdwi -m64" OEXT=obj
+	#make -f Makefile.guts DC="dmdwi -m64 -L/subsystem:windows -L/entry:mainCRTStartup" OEXT=obj
+	 make -f Makefile.guts DC="dmdwi -m64" OEXT=obj

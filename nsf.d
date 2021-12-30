@@ -61,10 +61,66 @@ class NsfWidget : Widget {
 		this.smw = parent;
 		super(parent);
 
+		parent.addDefaultWheelListeners(NOTE_HEIGHT);
+
 		smw.addEventListener((scope ScrollEvent se) {
-			queueRecomputeChildLayout();
+			foreach(child; children) {
+				child.x -= smw.position.x - lastScrollX;
+				child.y -= smw.position.y - lastScrollY;
+			}
+			lastScrollX = smw.position.x;
+			lastScrollY = smw.position.y;
+			redraw();
+		});
+
+
+
+		this.addEventListener((MouseDownEvent ev) {
+			dragging = cast(NsfPieceWidget) ev.target;
+			if(dragging is null)
+				return;
+			if(dragging.command.type != FF1MusicCommand.Type.Play && dragging.command.type != FF1MusicCommand.Type.Rest) {
+				dragging = null;
+				return;
+			}
+			this.parentWindow.captureMouse(dragging);
+		});
+
+		this.addEventListener((MouseUpEvent ev) {
+			this.parentWindow.releaseMouseCapture();
+			dragging = null;
+		});
+
+		this.addEventListener(delegate(MouseMoveEvent ev) {
+			if(dragging is null) return;
+
+			if(ev.clientY < 0) {
+				//ev.command = ev.command
+				dragging.y -= NOTE_HEIGHT;
+				dragging.redraw();
+
+				dragging.command.arg--;
+
+				editableData.rawData[dragging.address - 0x8000 .. dragging.address - 0x8000 + dragging.command.instructionLength] = dragging.command.toBytes();
+				Update(false);
+			} else if(ev.clientY > NOTE_HEIGHT) {
+				dragging.y += NOTE_HEIGHT;
+				dragging.redraw();
+
+				dragging.command.arg++;
+
+				editableData.rawData[dragging.address - 0x8000 .. dragging.address - 0x8000 + dragging.command.instructionLength] = dragging.command.toBytes();
+				Update(false);
+			}
 		});
 	}
+
+	NsfPieceWidget dragging;
+
+	bool[3] channelsShowing = true;
+
+	int lastScrollX;
+	int lastScrollY;
 
 	static class Style : Widget.Style {
 		override WidgetBackground background() {
@@ -163,81 +219,115 @@ class NsfWidget : Widget {
 
 	int frame;
 	int lastFrameDrawn;
-	int timeline;
-	NsfPieceWidget current;
-	int currentIndex;
-	int durationRemaining;
-	int loopsPerformed;
+
+	int[3] timeline;
+	NsfPieceWidget[3] current;
+	int[3] currentIndex;
+	int[3] durationRemaining;
+	int[3] loopsPerformed;
+
 	override Rectangle paintContent(WidgetPainter painter, const Rectangle bounds) {
-		if(children.length == 0 || durationRemaining <= -1)
+		if(children.length == 0 || durationRemaining[0] <= -1)
 			return bounds;
 
 		const frame = this.frame;// - 1; // it actually advances this when the buffer is going to the sound card, so we're slightly ahead of reality
 
 		while(lastFrameDrawn < frame) {
-			if(current is null) {
-				currentIndex = -1;
-				durationRemaining = 0;
-			}
-
-			while(durationRemaining == 0) {
-				currentIndex++;
-				current = cast(NsfPieceWidget) children[currentIndex];
-				assert(current !is null);
-				if(current.command.type == FF1MusicCommand.Type.End)
-					durationRemaining = -1;
-				else if(current.command.type == FF1MusicCommand.Type.Loop) {
-					if(current.command.arg && loopsPerformed == current.command.arg) {
-						// do nothing, we just proceed
-						durationRemaining = 0;
-						loopsPerformed = 0;
-					} else {
-						// otherwise it is infinite or we still have some left
-						timeline = 0;
-						if(current.command.arg)
-							loopsPerformed++;
-						durationRemaining = 0;
-						currentIndex = -1;
-						foreach(child; children) {
-							if(child is current.loopTo)
-								break;
-							timeline += (cast(NsfPieceWidget) child).duration;
-							currentIndex++;
-						}
+			foreach(channel; 0 .. 3) {
+				if(current[channel] is null) {
+					int thing = -1;
+					foreach(child; children) {
+						auto i = cast(NsfPieceWidget) child;
+						if(i.channel == channel)
+							break;
+						thing++;
 					}
-				} else {
-					durationRemaining = current.duration;
+					currentIndex[channel] = thing;
+					durationRemaining[channel] = 0;
 				}
-			}
 
-			timeline++;
-			durationRemaining--;
+				while(durationRemaining[channel] == 0) {
+					currentIndex[channel]++;
+					current[channel] = cast(NsfPieceWidget) children[currentIndex[channel]];
+					assert(current[channel] !is null);
+					if(current[channel].command.type == FF1MusicCommand.Type.End)
+						durationRemaining = -1;
+					else if(current[channel].command.type == FF1MusicCommand.Type.Loop) {
+						if(current[channel].command.arg && loopsPerformed[channel] == current[channel].command.arg) {
+							// do nothing, we just proceed
+							durationRemaining[channel] = 0;
+							loopsPerformed[channel] = 0;
+						} else {
+							// otherwise it is infinite or we still have some left
+							timeline[channel] = 0;
+							if(current[channel].command.arg)
+								loopsPerformed[channel]++;
+							durationRemaining[channel] = 0;
+							currentIndex[channel] = -1;
+							foreach(child; children) {
+								if(child is current[channel].loopTo)
+									break;
+
+								auto i = cast(NsfPieceWidget) child;
+								if(i.channel == channel)
+									timeline[channel] += (cast(NsfPieceWidget) child).duration;
+								currentIndex[channel]++;
+							}
+						}
+					} else {
+						durationRemaining[channel] = current[channel].duration;
+					}
+				}
+
+				timeline[channel]++;
+				durationRemaining[channel]--;
+			}
 
 			lastFrameDrawn++;
 		}
 
-		painter.drawLine(Point(timeline * FRAME_ZOOM - smw.position.x, 0), Point(timeline * FRAME_ZOOM - smw.position.x, this.height));
+		foreach(channel; 0 .. 3) {
+			if(!channelsShowing[channel])
+				continue;
+			Color c;
+			c.components[0 .. 3] = 0;
+			c.components[3] = 255;
+			c.components[channel] = 255;
+			painter.outlineColor = c;
+			painter.drawLine(Point(timeline[channel] * FRAME_ZOOM - smw.position.x + channel, 0), Point(timeline[channel] * FRAME_ZOOM - smw.position.x + channel, this.height));
+		}
 		return bounds;
 	}
 }
 
+void delegate(bool) Update;
+
 class NsfPieceWidget : Widget {
-	this(ushort address, int channel, int octave, int duration, FF1MusicCommand command, Widget parent) {
+	this(ushort address, int channel, int octave, int duration, FF1MusicCommand command, NsfWidget parent) {
 		this.address = address;
 		this.channel = channel;
 		this.octave = octave;
 		this.command = command;
 		this.duration = duration;
+		this.parent = parent;
 		import std.conv;
 		this.statusTip = to!string(command);
 		super(parent);
 
 		this.addEventListener((DoubleClickEvent ev) {
-			dialog((FF1MusicCommand cmd) {
-				this.command = cmd;
+			this.command.dialog((FF1MusicCommand cmd) {
+				if(cmd.instructionLength == this.command.instructionLength) {
+					editableData.rawData[address - 0x8000 .. address - 0x8000 + cmd.instructionLength] = cmd.toBytes();
+					this.command = cmd;
+
+					Update(true);
+				} else
+					messageBox("The commands have different length and could not be added automatically.");
 			});
 		});
 	}
+
+	NsfWidget parent;
 
 	int octave;
 	int channel;
@@ -249,6 +339,10 @@ class NsfPieceWidget : Widget {
 	NsfPieceWidget loopTo;
 
 	override Rectangle paintContent(WidgetPainter painter, const Rectangle bounds) {
+
+		if(!parent.channelsShowing[channel])
+			return bounds;
+
 		auto channelColor = channel == 0 ? Color.red : channel == 1 ? Color.green : Color.blue;
 
 		with(FF1MusicCommand.Type)
@@ -322,6 +416,43 @@ class NsfPieceWidget : Widget {
 
 // offset into the music data...
 enum DURATION_TABLE_OFFSET = 0x1d1c;
+import core.time;
+
+struct DurationMatch {
+	this(FF1Data data, Duration d, int preferredTempo = -1) {
+		auto msecs = d.total!"msecs";
+
+		size_t bestIndex;
+		float bestDifference = float.infinity;
+		int tempo;
+		int slot;
+		foreach(idx, frames; data.durationTable) {
+			if(preferredTempo == -1 || tempo == preferredTempo) {
+				auto time = frames * 1000.0 / 60.0;
+				auto diff = time - msecs;
+				if(diff < 0)
+					diff = -diff;
+
+				if(diff < bestDifference) {
+					bestDifference = diff;
+					bestIndex = idx;
+				}
+			}
+
+			slot++;
+			if(slot == 16) {
+				slot = 0;
+				tempo++;
+			}
+		}
+
+		this.tempo = cast(ubyte) bestIndex / 16;
+		this.duration = bestIndex % 16;
+	}
+
+	ubyte tempo;
+	ubyte duration;
+}
 
 struct FF1Data {
 	ubyte[] rawData;
@@ -352,11 +483,21 @@ struct FF1Data {
 
 		return s[0 .. index];
 	}
+
+	ubyte[] allSongData() {
+		enum SONG_DATA_OFFSET = 4 * 2 * 24; // end of the jump table begins the data table
+		return rawData[SONG_DATA_OFFSET .. SONG_DATA_OFFSET + 7262]; // and length i just looked up myself
+	}
 }
 FF1Data editableData;
 
 void main() {
 	static import std.file;
+
+	if(!std.file.exists("ff1.nes")) {
+		messageBox("You need to put a ff1.nes file (it must be called that, and vanilla rom best but it seems to work ok with rando roms too) right next to the nsf.exe file. Then, try running it again.");
+		return;
+	}
 
 	// I just found that offset by looking at the file in a hex editor...
 	enum ROM_OFFSET = 0x034010;
@@ -427,7 +568,19 @@ void main() {
 	auto channelControls = [sq1, sq2, tri];
 	foreach(c; channelControls)
 		c.checked = true;
+
+	// add: other channels for non-ff1 roms
+
+	auto smw = new ScrollMessageWidget(window);
+	auto display = new NsfWidget(smw);
+
 	hl.addEventListener((scope ChangeEvent!bool ce) {
+		foreach(channel, control; channelControls)
+			if(ce.srcElement is control) {
+				display.channelsShowing[channel] = ce.value;
+				break;
+			}
+
 		if(!playingNsf)
 			return;
 		foreach(channel, control; channelControls)
@@ -439,12 +592,8 @@ void main() {
 			}
 	});
 
-	// add: other channels for non-ff1 roms
 
-	auto smw = new ScrollMessageWidget(window);
-	auto display = new NsfWidget(smw);
-
-	void playSong(int index, bool reloadData = false) {
+	void playSong(int index, bool reloadData = false, bool rebuildUi = true) {
 		synchronized {
 			if(reloadData) {
 				nsf_free(&nsf);
@@ -459,6 +608,9 @@ void main() {
 			playingNsf = true;
 			display.resetPlayerState();
 		}
+
+		if(!rebuildUi)
+			return;
 
 		if(index < 1)
 			return;
@@ -520,10 +672,10 @@ void main() {
 			void Save() {
 
 			}
-			void Save_As() {
+			void Save_As(string filename) {
 				auto newRom = rom.dup;
 				newRom[ROM_OFFSET .. ROM_OFFSET + ROM_DATA_LENGTH] = editableData.rawData[];
-				std.file.write("ff1-newmusic.nes", newRom);
+				std.file.write(filename, newRom);
 
 			}
 			@separator
@@ -575,6 +727,20 @@ void main() {
 				Update();
 			}
 
+			@accelerator("F5")
+			void Restart() {
+				auto sid = chooser.getSelection();
+				playSong(sid, true);
+			}
+
+			@accelerator("F6")
+			void Pause() {
+				if(playingNsf)
+					Stop();
+				else
+					Start();
+			}
+
 			@accelerator("F7")
 			void Tempo_Down() {
 				if(tempo == 0)
@@ -600,24 +766,91 @@ void main() {
 
 				Update();
 			}
+		}
 
+		@menu("Track") {
+			void Import_From_Midi(string file) {
+				auto sid = chooser.getSelection() - 1;
 
-			@accelerator("F5")
-			void Update() {
-				auto sid = chooser.getSelection();
-				playSong(sid, true);
-			}
+				auto c1 = editableData.songData(sid, 0).clearSongData();
+				auto c2 = editableData.songData(sid, 1).clearSongData();
+				auto c3 = editableData.songData(sid, 2).clearSongData();
 
-			void Stop() {
-				playingNsf = false;
-				ao.pause();
-			}
+				import arsd.midi;
+				import core.time;
 
-			void Start() {
-				playSong(chooser.getSelection());
-				ao.unpause();
+				auto f = new MidiFile();
+				f.loadFromBytes(cast(ubyte[]) std.file.read(file));
+				//f.tracks = f.tracks[0 .. 1]; // only keep track 1 and hope it works
+
+				c1 = c1.addFF1Command(FF1MusicCommand(FF1MusicCommand.Type.EnvelopePattern, 5));
+				c1 = c1.addFF1Command(FF1MusicCommand(FF1MusicCommand.Type.EnvelopeSpeed, 4));
+				c1 = c1.addFF1Command(FF1MusicCommand(FF1MusicCommand.Type.Octave, 2));
+
+				int currentOctave = 2;
+				int currentTempo = -1;
+
+				Duration position;
+
+				int activeNote;
+				Duration activeNotePosition;
+
+				void commitNote() {
+					int octave = activeNote / 12;
+					int semitone = activeNote % 12;
+
+					auto duration = position - activeNotePosition;
+
+					auto match = DurationMatch(editableData, duration * 2);
+
+					if(match.tempo != currentTempo) {
+						c1 = c1.addFF1Command(FF1MusicCommand(FF1MusicCommand.Type.Tempo, match.tempo));
+						currentTempo = match.tempo;
+					}
+
+					c1 = c1.addFF1Command(FF1MusicCommand(FF1MusicCommand.Type.Play, cast(ubyte) semitone, match.duration));
+				}
+
+				foreach(item; f.playbackStream) {
+					position += item.wait;
+
+					if(item.event.channel != 0)
+						continue;
+					if(item.event.isMeta)
+						continue;
+
+					if(item.event.event == MIDI_EVENT_NOTE_ON) {
+						if(activeNote) {
+							commitNote();
+						}
+						activeNote = item.event.data1;
+						activeNotePosition = position;
+					} else if(item.event.event == MIDI_EVENT_NOTE_OFF) {
+						if(activeNote)
+							commitNote();
+						activeNote = 0;
+					}
+				}
+
+				Update();
 			}
 		}
+
+		private void Update(bool rebuildUi = true) {
+			auto sid = chooser.getSelection();
+			playSong(sid, true, rebuildUi);
+		}
+		private void Stop() {
+			playingNsf = false;
+			ao.suspend();
+		}
+
+		private void Start() {
+			//playSong(chooser.getSelection());
+			playingNsf = true;
+			ao.unsuspend();
+		}
+
 
 		@menu("&Help") {
 			void About() {
@@ -627,6 +860,8 @@ void main() {
 	}
 
 	Menu menu;
+
+	Update = &menu.Update;
 
 	window.setMenuAndToolbarFromAnnotatedCode(menu);
 
@@ -706,6 +941,44 @@ struct FF1MusicCommand {
 		return type == Type.End || (type == Type.Loop && arg == 0);
 	}
 
+	// it returns a temporary static buffer, you should copy it right out to somewhere else immediately
+	ubyte[] toBytes() {
+		static ubyte[3] buffer;
+
+		with(Type)
+		final switch(type) {
+			case Play:
+				buffer[0] = cast(ubyte) (arg << 4 | duration);
+			break;
+			case Rest:
+				buffer[0] = 0xc0 | duration;
+			break;
+			case Loop:
+				buffer[0] = 0xd0 | arg;
+				buffer[1] = address & 0xff;
+				buffer[2] = address >> 8;
+			break;
+			case Octave:
+				buffer[0] = cast(ubyte) (0xd0 | (arg + 8));
+			break;
+			case EnvelopePattern:
+				buffer[0] = 0xe0 | arg;
+			break;
+			case EnvelopeSpeed:
+				buffer[0] = 0xf8;
+				buffer[1] = arg;
+			break;
+			case Tempo:
+				buffer[0] = cast(ubyte) (0xf0 | (arg + 9));
+			break;
+			case End:
+				buffer[0] = 0xff;
+			break;
+		}
+
+		return buffer[0 .. instructionLength];
+	}
+
 	version(none)
 	string toString() const {
 		// FIXME
@@ -747,6 +1020,20 @@ FF1MusicCommand parseCommand(ref ubyte[] arr) {
 	} else if(b == 0xff) {
 		return FF1MusicCommand(FF1MusicCommand.Type.End);
 	} else throw new Exception("broken ff1 song data");
+}
+
+ubyte[] clearSongData(ubyte[] data) {
+	data[] = 0xCf; // shortest duration rest
+	data[$-1] = 0xff; // end of song marker
+
+	return data;
+}
+
+ubyte[] addFF1Command(ubyte[] data, FF1MusicCommand cmd) {
+	if(data.length < cmd.instructionLength + 1)
+		return data; // can't modify anymore, need at least an end-of-song marker
+	data[0 .. cmd.instructionLength] = cmd.toBytes();
+	return data[cmd.instructionLength .. $];
 }
 
 
