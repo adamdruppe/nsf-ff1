@@ -107,6 +107,7 @@ void main() {
 				nsf.setChannelEnabled(cast(int) channel, ce.value);
 				break;
 			}
+		Update(true);
 	});
 
 	auto ao = AudioOutputThread(true);
